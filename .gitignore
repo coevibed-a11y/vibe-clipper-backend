@@ -2,7 +2,9 @@
 venv/
 *.pt
 __pycache__/
+data/
 dataset/
+tests/
 .pytest_cache/
 .env
 firebase-adminsdk.json

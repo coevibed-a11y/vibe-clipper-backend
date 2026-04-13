@@ -17,7 +17,7 @@ class VibeClipperEngine:
         cropped_images = []
         
         # 1. 타겟 탐지
-        detection_results = self.detector.predict(img_array, device="cuda", conf=0.25, verbose=False)
+        detection_results = self.detector.predict(img_array, device="cuda", conf=0.55, verbose=False)
         
         target_boxes = []
         for det in detection_results[0].boxes:

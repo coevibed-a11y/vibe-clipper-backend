@@ -1,16 +1,25 @@
 import requests
 import firebase_admin
+import os
+import cv2
+
+# 로컬 모듈 임포트
 from firebase_admin import credentials, db
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-import os
-import cv2
+
+# 로컬 엔진과 유틸리티 모듈 임포트
 from src.engine import VibeClipperEngine
 from src.youtube import YouTubeStreamer
 from src.video import VideoProcessor
 from dotenv import load_dotenv
+
+# 스마트 필터 및 파일 관리 모듈 임포트
+from src.deduplicator import ImageDeduplicator
+from src.time_manager import TimeManager
+from src.file_manager import FileManager
 
 # ==========================================
 # 1. 환경 변수(.env) 로드 및 보안 설정 적용
@@ -52,10 +61,15 @@ app.mount("/dataset", StaticFiles(directory="dataset"), name="dataset")
 engine = VibeClipperEngine()
 yt_streamer = YouTubeStreamer()
 
+# 스마트 필터 가동 (85% 이상 똑같으면 버림, 최근 10장 기억)
+deduplicator = ImageDeduplicator(threshold=0.85, memory_size=10)
+
 class CropRequest(BaseModel):
     youtube_url: str
     target_label: str = "bird"
     max_crops: int = 5
+    start_time: str = "00:00:00"  # (기본값 0초)
+    end_time: str = "00:05:00"    # (기본값 5분)
 
 # ==========================================
 # 5. 자동 동기화 로직 (Ngrok -> Firebase)
@@ -97,25 +111,65 @@ async def mine_video(
     if not stream_url:
         return {"status": "error", "message": "유튜브 스트림을 가져올 수 없습니다."}
 
+    # 🌟 [추가] 이번 요청을 위한 매니저들 등판
+    time_mgr = TimeManager(request.start_time, request.end_time)
+    file_mgr = FileManager("dataset")
+    
+    # 🌟 [추가] 수확 시작 전 폴더 싹 비우기! (이전 데이터 섞임 방지)
+    file_mgr.clean_dataset_folder()
+    
     video_proc = VideoProcessor(target_fps=1)
     total_crops = 0
     saved_files = []
 
-    # 파이프라인 가동
+    print(f"🎬 {request.start_time} 부터 수확을 시작합니다...")
+
+    # 파이프라인 가동!
+    # time_sec는 현재 프레임의 시간(초)을 의미합니다.
     for time_sec, frame in video_proc.extract_frames_stream(stream_url):
+        
+        # 🌟 1. 아직 시작 시간이 안 됐다면? -> 쿨하게 패스 (빨리 감기)
+        if not time_mgr.is_time_to_start(time_sec):
+            continue 
+            
+        # 🌟 2. 종료 시간이 지났다면? -> 칼퇴근! (파이프라인 즉시 종료)
+        if time_mgr.is_time_to_stop(time_sec):
+            print("🛑 [수확 종료] 설정한 종료 시간에 도달했습니다.")
+            break 
+            
+        # --- (이 아래는 기존에 작성하신 수확 & 필터링 로직 그대로 유지) ---
         cropped_images = engine.crop_target(frame, target_label=request.target_label)
         
         for crop_img in cropped_images:
+            if deduplicator.is_duplicate(crop_img):
+                continue
+
             filename = f"dataset/gold_{request.target_label}_{total_crops}.png"
             cv2.imwrite(filename, crop_img)
             saved_files.append(filename)
             total_crops += 1
             
             if total_crops >= request.max_crops:
+                # 🌟 [수정] 모듈을 통해 압축하고, URL 받기
+                zip_filename = file_mgr.create_zip_and_cleanup()
+                
                 return {
                     "status": "success", 
-                    "message": f"총 {total_crops}장의 데이터 수확 완료!",
-                    "files": saved_files
+                    "message": f"총 {total_crops}장의 데이터 수확 및 압축 완료!",
+                    "files": saved_files,
+                    "zip_url": f"dataset/{zip_filename}" # 다운로드 링크
                 }
 
-    return {"status": "success", "message": "작업이 완료되었습니다.", "files": saved_files}
+    # 영상이 다 끝났을 때
+    if total_crops > 0:
+        zip_filename = file_mgr.create_zip_and_cleanup()
+        zip_url = f"dataset/{zip_filename}"
+    else:
+        zip_url = None
+
+    return {
+        "status": "success", 
+        "message": f"작업 완료 (총 {total_crops}장 수확)", 
+        "files": saved_files,
+        "zip_url": zip_url
+    }
