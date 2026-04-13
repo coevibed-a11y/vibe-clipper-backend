@@ -5,3 +5,4 @@ __pycache__/
 dataset/
 .pytest_cache/
 .env
+firebase-adminsdk.json

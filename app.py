@@ -1,58 +1,107 @@
+import requests
+import firebase_admin
+from firebase_admin import credentials, db
 from fastapi import FastAPI, Header, HTTPException
-from fastapi.middleware.cors import CORSMiddleware # CORS 추가
-from fastapi.staticfiles import StaticFiles # 정적 파일 제공 추가
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import os
 import cv2
 from src.engine import VibeClipperEngine
 from src.youtube import YouTubeStreamer
 from src.video import VideoProcessor
+from dotenv import load_dotenv
+
+# ==========================================
+# 1. 환경 변수(.env) 로드 및 보안 설정 적용
+# ==========================================
+load_dotenv() # .env 파일 읽어오기
+
+# .env 파일에서 비밀 장부 값 꺼내오기
+DATABASE_URL = os.getenv("FIREBASE_DB_URL")
+API_KEY_SECRET = os.getenv("VIBE_API_KEY")
+
+# ==========================================
+# 2. Firebase 초기화
+# ==========================================
+cred = credentials.Certificate("firebase-adminsdk.json")
+firebase_admin.initialize_app(cred, {
+    'databaseURL': DATABASE_URL # 이제 깃허브에 주소가 노출되지 않습니다!
+})
 
 app = FastAPI(title="Vibe-Clipper API")
 
-# 0. CORS 설정 (Next.js 웹 화면에서 API를 호출할 수 있게 허용)
+# ==========================================
+# 3. FastAPI 미들웨어 및 정적 파일 설정
+# ==========================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # 포폴용이므로 일단 모두 허용
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 1. 이미지 폴더 개방 (Next.js가 dataset 폴더의 이미지를 가져갈 수 있게 함)
 if not os.path.exists("dataset"):
     os.makedirs("dataset")
 app.mount("/dataset", StaticFiles(directory="dataset"), name="dataset")
 
-API_KEY_SECRET = "my_vibe_secret_123"
-
-# 2. 엔진들은 서버가 켜질 때 딱 한 번만 로드되도록 전역 변수로 세팅
+# ==========================================
+# 4. AI 엔진 및 스트리머 전역 로드
+# ==========================================
 engine = VibeClipperEngine()
 yt_streamer = YouTubeStreamer()
 
-# 3. 프론트엔드(웹)에서 받을 데이터 형식 정의
 class CropRequest(BaseModel):
     youtube_url: str
     target_label: str = "bird"
     max_crops: int = 5
 
-# 4. API 엔드포인트 생성 (이 주소로 요청이 들어오면 작업 시작!)
+# ==========================================
+# 5. 자동 동기화 로직 (Ngrok -> Firebase)
+# ==========================================
+def update_ngrok_to_firebase():
+    try:
+        response = requests.get("http://localhost:4040/api/tunnels", timeout=5)
+        data = response.json()
+        public_url = data['tunnels'][0]['public_url']
+        
+        ref = db.reference('server_status')
+        ref.update({
+            'backend_url': public_url,
+            'status': 'online'
+        })
+        print(f"🚀 [자동화] Firebase에 새로운 주소 등록 완료: {public_url}")
+    except Exception as e:
+        print(f"⚠️ [자동화 실패] Ngrok 주소를 가져오지 못했습니다: {e}")
+        
+@app.on_event("startup")
+async def startup_event():
+    update_ngrok_to_firebase()
+
+# ==========================================
+# 6. 메인 API 엔드포인트
+# ==========================================
 @app.post("/api/mine")
-async def mine_video(request: CropRequest):
+async def mine_video(
+    request: CropRequest, 
+    x_api_key: str = Header(None)  
+):
+    # 보안 로직 (환경 변수에서 가져온 API_KEY_SECRET과 비교)
+    if x_api_key != API_KEY_SECRET:
+        raise HTTPException(status_code=401, detail="API Key가 틀렸거나 없습니다! 접근 금지 🚫")
+
     print(f"🌐 웹에서 요청이 들어왔습니다! 타겟: {request.target_label}")
     
     stream_url = yt_streamer.get_direct_url(request.youtube_url)
     if not stream_url:
         return {"status": "error", "message": "유튜브 스트림을 가져올 수 없습니다."}
 
-    if not os.path.exists("dataset"):
-        os.makedirs("dataset")
-
     video_proc = VideoProcessor(target_fps=1)
     total_crops = 0
     saved_files = []
 
-    # 파이프라인 가동!
+    # 파이프라인 가동
     for time_sec, frame in video_proc.extract_frames_stream(stream_url):
         cropped_images = engine.crop_target(frame, target_label=request.target_label)
         
