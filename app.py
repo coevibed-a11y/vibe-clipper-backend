@@ -61,8 +61,8 @@ app.mount("/dataset", StaticFiles(directory="dataset"), name="dataset")
 engine = VibeClipperEngine()
 yt_streamer = YouTubeStreamer()
 
-# 스마트 필터 가동 (85% 이상 똑같으면 버림, 최근 10장 기억)
-deduplicator = ImageDeduplicator(threshold=0.85, memory_size=10)
+# 스마트 필터 가동 (70% 이상 똑같으면 버림, 최근 10장 기억)
+deduplicator = ImageDeduplicator(threshold=0.7, memory_size=10)
 
 class CropRequest(BaseModel):
     youtube_url: str
@@ -70,28 +70,6 @@ class CropRequest(BaseModel):
     max_crops: int = 5
     start_time: str = "00:00:00"  # (기본값 0초)
     end_time: str = "00:05:00"    # (기본값 5분)
-
-# ==========================================
-# 5. 자동 동기화 로직 (Ngrok -> Firebase)
-# ==========================================
-def update_ngrok_to_firebase():
-    try:
-        response = requests.get("http://localhost:4040/api/tunnels", timeout=5)
-        data = response.json()
-        public_url = data['tunnels'][0]['public_url']
-        
-        ref = db.reference('server_status')
-        ref.update({
-            'backend_url': public_url,
-            'status': 'online'
-        })
-        print(f"🚀 [자동화] Firebase에 새로운 주소 등록 완료: {public_url}")
-    except Exception as e:
-        print(f"⚠️ [자동화 실패] Ngrok 주소를 가져오지 못했습니다: {e}")
-        
-@app.on_event("startup")
-async def startup_event():
-    update_ngrok_to_firebase()
 
 # ==========================================
 # 6. 메인 API 엔드포인트
@@ -141,8 +119,8 @@ async def mine_video(
         cropped_images = engine.crop_target(frame, target_label=request.target_label)
         
         for crop_img in cropped_images:
-            if deduplicator.is_duplicate(crop_img):
-                continue
+            #if deduplicator.is_duplicate(crop_img):
+            #    continue
 
             filename = f"dataset/gold_{request.target_label}_{total_crops}.png"
             cv2.imwrite(filename, crop_img)
@@ -155,7 +133,7 @@ async def mine_video(
                 
                 return {
                     "status": "success", 
-                    "message": f"총 {total_crops}장의 데이터 수확 및 압축 완료!",
+                    "message": f"최대 수확량(50장) 도달! 고순도 에셋 압축 완료",
                     "files": saved_files,
                     "zip_url": f"dataset/{zip_filename}" # 다운로드 링크
                 }

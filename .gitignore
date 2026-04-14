@@ -8,3 +8,4 @@ tests/
 .pytest_cache/
 .env
 firebase-adminsdk.json
+cloudflared.exe

@@ -23,22 +23,25 @@ class FileManager:
 
     def create_zip_and_cleanup(self) -> str:
         """현재 dataset 폴더를 압축하고, 예전 압축 파일은 지워서 용량을 아낌"""
-        # 1. 새 압축 파일 이름 생성 (예: vibe_crops_1680000000.zip)
         timestamp = int(time.time())
-        zip_base_name = f"{self.dataset_dir}/vibe_crops_{timestamp}"
+        final_zip_name = f"vibe_crops_{timestamp}.zip"
+        final_zip_path = os.path.join(self.dataset_dir, final_zip_name)
+
+        # 🚨 [핵심 수정] 무한 압축 버그(Zip Bomb) 차단!
+        # 1. 압축 파일을 dataset 폴더 바깥(현재 작업 폴더의 최상위)에 임시로 만듭니다.
+        temp_zip_base = f"temp_vibe_crops_{timestamp}"
+        shutil.make_archive(temp_zip_base, 'zip', self.dataset_dir)
         
-        # 2. 압축 실행
-        shutil.make_archive(zip_base_name, 'zip', self.dataset_dir)
-        final_zip_name = f"{zip_base_name}.zip"
+        # 2. 다 만들어진 임시 압축 파일을 dataset 폴더 안으로 안전하게 이동시킵니다.
+        shutil.move(f"{temp_zip_base}.zip", final_zip_path)
+        
         print(f"📦 [FileManager] 압축 완료: {final_zip_name}")
 
         # 3. 용량 관리: 방금 만든 것 빼고, 옛날 zip 파일들은 다 지워버림
         all_zips = glob.glob(f"{self.dataset_dir}/*.zip")
         for old_zip in all_zips:
-            # 백슬래시/슬래시 차이 무시하고 파일명 비교
-            if os.path.normpath(old_zip) != os.path.normpath(final_zip_name):
+            if os.path.normpath(old_zip) != os.path.normpath(final_zip_path):
                 os.remove(old_zip)
                 print(f"🗑️ [FileManager] 용량 확보를 위해 이전 파일 삭제: {old_zip}")
 
-        # 프론트엔드에 전달할 파일 이름만 리턴
-        return f"vibe_crops_{timestamp}.zip"
+        return final_zip_name
